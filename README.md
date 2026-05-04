@@ -61,4 +61,16 @@ If MATLAB reports missing input files, check that the dataset files are located 
 
 If the scripts contain local file paths, update those paths before running the analysis.
 
+If you use this code, please cite the associated manuscript:
+
+Al Khafaji A, Gómez-Llorente C, Camacho J. Consensus ANOVA--Simultaneous Component Analysis for the Normalization of Metagenomics Data.
+
+Update this citation with the final journal reference once the manuscript is published.
+
+Contact
+
+For questions about the code, please contact:
+
+Amen Al Khafaji
+amen.a.khabeer@uotechnology.edu.iq
 
