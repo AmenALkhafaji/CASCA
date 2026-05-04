@@ -1,0 +1,1083 @@
+%% ============================================================
+%  COMBINED ANALYSIS:
+%  1) Pairwise overlap of significant taxa across methods
+%  2) Top 25 ASCA loading contributors + method-wise effect heatmaps
+%
+%  Methods:
+%     RAW, TSS, Rarefaction, CLR, C-ASCA consensus representation
+%
+%  Significance rule:
+%     Feature-wise Kruskal-Wallis test + Benjamini-Hochberg FDR
+%     q <= 0.05
+%
+%  C-ASCA consensus representation:
+%     X_CASCA = average across blocks of B + C(B) + D
+%     excluding A and AB disagreement terms
+%
+%  IMPORTANT:
+%     This code does NOT produce full-taxa heatmaps.
+%     It only produces top-25 taxa heatmaps and method-overlap summaries.
+%
+%  Required in workspace:
+%     X      = 948 x p matrix
+%     Group  = 948 x 1 vector, -1 = Control/H, +1 = Case/CDI
+%     lab    = p x 1 taxonomic-feature labels
+%     ascao  = C-ASCA model structure
+%     outDir = output folder
+%
+%  Block structure:
+%     rows 1:237     = RAW
+%     rows 238:474   = TSS
+%     rows 475:711   = Rarefaction
+%     rows 712:948   = CLR
+%% ============================================================
+
+clc;
+
+%% -----------------------------
+% Settings
+%% -----------------------------
+alpha = 0.05;
+N = 237;
+topK = 25;
+nDec = 2;
+
+lab = string(lab(:));
+
+if ~exist('outDir','var') || ~isfolder(outDir)
+    outDir = fullfile(pwd, 'Figures_JPG');
+    if ~exist(outDir, 'dir')
+        mkdir(outDir);
+    end
+end
+
+%% -----------------------------
+% Basic checks
+%% -----------------------------
+[nRows, nTaxa] = size(X);
+
+if nRows ~= 4*N
+    error('Expected X to have 4*N rows = %d rows, but found %d rows.', 4*N, nRows);
+end
+
+if numel(lab) ~= nTaxa
+    error('lab must have the same number of elements as columns in X.');
+end
+
+if numel(Group) ~= nRows
+    error('Group must have the same number of rows as X.');
+end
+
+%% -----------------------------
+% Split four preprocessing blocks
+%% -----------------------------
+idxRAW  = 1:N;
+idxTSS  = N+1 : 2*N;
+idxRARE = 2*N+1 : 3*N;
+idxCLR  = 3*N+1 : 4*N;
+
+X_RAW  = X(idxRAW,  :);
+X_TSS  = X(idxTSS,  :);
+X_RARE = X(idxRARE, :);
+X_CLR  = X(idxCLR,  :);
+
+g_RAW  = Group(idxRAW);
+g_TSS  = Group(idxTSS);
+g_RARE = Group(idxRARE);
+g_CLR  = Group(idxCLR);
+
+%% -----------------------------
+% Build C-ASCA consensus-normalized matrix
+% Consensus representation = B + C(B) + D
+% Excludes A and AB disagreement terms
+%% -----------------------------
+xB = ascao.factors{2}.matrix;   % group / consensus effect
+xC = ascao.factors{3}.matrix;   % observation nested in group
+xD = ascao.factors{4}.matrix;   % depth effect
+
+Xmb_keep = xB + xC + xD;
+
+K = size(Xmb_keep, 1) / N;
+
+if mod(size(Xmb_keep, 1), N) ~= 0
+    error('Rows of Xmb_keep are not divisible by N.');
+end
+
+if abs(K - round(K)) > eps
+    error('K is not an integer. Check N and Xmb_keep dimensions.');
+end
+
+K = round(K);
+
+if K ~= 4
+    warning('Expected K = 4 normalization blocks, but K = %d.', K);
+end
+
+X3 = reshape(Xmb_keep, N, K, []);
+X_CASCA = squeeze(mean(X3, 2, 'omitnan'));   % N x p
+
+if size(X_CASCA,1) ~= N || size(X_CASCA,2) ~= nTaxa
+    error('X_CASCA must be N x nTaxa.');
+end
+
+g_CASCA = g_RAW;
+
+%% -----------------------------
+% Feature-wise Kruskal-Wallis + BH-FDR
+% effect = Median(Case) - Median(Control)
+%% -----------------------------
+[p_RAW,   q_RAW,   sig_RAW,   eff_RAW]   = local_kw_bh_feature_test(X_RAW,   g_RAW,   alpha);
+[p_TSS,   q_TSS,   sig_TSS,   eff_TSS]   = local_kw_bh_feature_test(X_TSS,   g_TSS,   alpha);
+[p_RARE,  q_RARE,  sig_RARE,  eff_RARE]  = local_kw_bh_feature_test(X_RARE,  g_RARE,  alpha);
+[p_CLR,   q_CLR,   sig_CLR,   eff_CLR]   = local_kw_bh_feature_test(X_CLR,   g_CLR,   alpha);
+[p_CASCA, q_CASCA, sig_CASCA, eff_CASCA] = local_kw_bh_feature_test(X_CASCA, g_CASCA, alpha);
+
+%% ============================================================
+%  PAIRWISE OVERLAP SUMMARY
+%% ============================================================
+
+methodNamesOverlap = ["Raw Data","TSS","Rarefaction","CLR","C-ASCA"];
+
+sigSets = {
+    sig_RAW(:), ...
+    sig_TSS(:), ...
+    sig_RARE(:), ...
+    sig_CLR(:), ...
+    sig_CASCA(:)
+};
+
+nMethods = numel(methodNamesOverlap);
+
+Method1 = strings(0,1);
+Method2 = strings(0,1);
+nshared = [];
+nunion  = [];
+Jaccard = [];
+
+SharedMat  = nan(nMethods, nMethods);
+UnionMat   = nan(nMethods, nMethods);
+JaccardMat = nan(nMethods, nMethods);
+
+for i = 1:nMethods
+    for j = 1:nMethods
+
+        A = sigSets{i};
+        B = sigSets{j};
+
+        shared_ij = sum(A & B);
+        union_ij  = sum(A | B);
+
+        if union_ij == 0
+            jac_ij = NaN;
+        else
+            jac_ij = shared_ij / union_ij;
+        end
+
+        SharedMat(i,j)  = shared_ij;
+        UnionMat(i,j)   = union_ij;
+        JaccardMat(i,j) = jac_ij;
+
+        if j > i
+            Method1(end+1,1) = methodNamesOverlap(i);
+            Method2(end+1,1) = methodNamesOverlap(j);
+            nshared(end+1,1) = shared_ij;
+            nunion(end+1,1)  = union_ij;
+            Jaccard(end+1,1) = jac_ij;
+        end
+    end
+end
+
+T_overlap = table(Method1, Method2, nshared, nunion, Jaccard, ...
+    'VariableNames', {'Method1','Method2','nshared','nunion','Jaccard'});
+
+disp('Pairwise overlap of significant taxa:');
+disp(T_overlap);
+
+writetable(T_overlap, fullfile(outDir, 'Table_pairwise_overlap_significant_taxa.csv'));
+
+nSig = cellfun(@sum, sigSets);
+
+T_counts = table(methodNamesOverlap(:), nSig(:), ...
+    'VariableNames', {'Method','NumSignificantTaxa'});
+
+disp('Number of significant taxa per method:');
+disp(T_counts);
+
+writetable(T_counts, fullfile(outDir, 'counts_significant_taxa_by_method.csv'));
+
+%% ============================================================
+%  GLOBAL HEATMAP CELL SIZE SETTINGS
+%% ============================================================
+
+% Use explicit cell sizes so all heatmaps look coherent.
+% Overlap heatmaps are 5 x 5, so cells can be square.
+% Top-25 heatmaps are 25 rows, so cells need smaller height.
+cellW_overlap = 0.60;
+cellH_overlap = 0.60;
+
+cellW_top = 0.60;
+cellH_top = 0.22;
+
+cbW = 0.18;
+cbGap = 0.15;
+
+%% ============================================================
+%  HEATMAP: Jaccard index
+%% ============================================================
+
+axW_overlap = nMethods * cellW_overlap;
+axH_overlap = nMethods * cellH_overlap;
+
+left_overlap   = 1.05;
+bottom_overlap = 0.95;
+right_overlap  = 0.45;
+top_overlap    = 0.45;
+
+figW_overlap = left_overlap + axW_overlap + cbGap + cbW + right_overlap;
+figH_overlap = bottom_overlap + axH_overlap + top_overlap;
+
+figJ = figure('Color','w', ...
+    'Units','inches', ...
+    'Position',[1 1 figW_overlap figH_overlap], ...
+    'PaperPositionMode','auto');
+
+axJ = axes(figJ, ...
+    'Units','inches', ...
+    'Position',[left_overlap bottom_overlap axW_overlap axH_overlap]);
+
+imagesc(axJ, JaccardMat);
+axis(axJ, 'equal');
+axis(axJ, 'tight');
+
+% Publication-style gold/bronze sequential colormap for Jaccard.
+% Neutral relative to Case/Control red-blue interpretation.
+cmapJ_base = [ ...
+    255 253 230;
+    255 245 179;
+    254 217 118;
+    254 178  76;
+    217  95  14;
+    140  45   4] / 255;
+
+cmapJ = interp1( ...
+    linspace(0,1,size(cmapJ_base,1)), ...
+    cmapJ_base, ...
+    linspace(0,1,256));
+
+colormap(figJ, cmapJ);
+caxis(axJ, [0 1]);
+
+cbJ = colorbar(axJ);
+cbJ.Units = 'inches';
+cbJ.Position = [left_overlap + axW_overlap + cbGap, bottom_overlap, cbW, axH_overlap];
+cbJ.Ticks = [0 0.5 1];
+cbJ.TickLabels = {'0','0.5','1'};
+cbJ.Label.String = 'Jaccard index';
+cbJ.FontName = 'Arial';
+cbJ.FontSize = 10;
+cbJ.LineWidth = 0.7;
+
+axJ.XTick = 1:nMethods;
+axJ.XTickLabel = methodNamesOverlap;
+axJ.YTick = 1:nMethods;
+axJ.YTickLabel = methodNamesOverlap;
+axJ.FontName = 'Arial';
+axJ.FontSize = 11.5;
+axJ.TickLength = [0 0];
+axJ.LineWidth = 0.9;
+axJ.TickLabelInterpreter = 'none';
+xtickangle(axJ, 35);
+
+hold(axJ, 'on');
+
+for i = 1:nMethods
+    for j = 1:nMethods
+
+        val = JaccardMat(i,j);
+
+        if isnan(val)
+            labelStr = 'NA';
+        else
+            labelStr = sprintf('%.3f', val);
+        end
+
+        if ~isnan(val) && val >= 0.60
+            txtColor = [1 1 1];
+        else
+            txtColor = [0 0 0];
+        end
+
+        text(axJ, j, i, labelStr, ...
+            'HorizontalAlignment','center', ...
+            'VerticalAlignment','middle', ...
+            'FontName','Arial', ...
+            'FontSize',10.5, ...
+            'Color',txtColor);
+    end
+end
+
+exportgraphics(figJ, fullfile(outDir,'heatmap_pairwise_jaccard_significant_taxa.png'), ...
+    'Resolution',600, 'BackgroundColor','white');
+
+exportgraphics(figJ, fullfile(outDir,'heatmap_pairwise_jaccard_significant_taxa.pdf'), ...
+    'ContentType','vector', 'BackgroundColor','white');
+
+%% ============================================================
+%  HEATMAP: number of shared significant taxa
+%% ============================================================
+
+figS = figure('Color','w', ...
+    'Units','inches', ...
+    'Position',[1 1 figW_overlap figH_overlap], ...
+    'PaperPositionMode','auto');
+
+axS = axes(figS, ...
+    'Units','inches', ...
+    'Position',[left_overlap bottom_overlap axW_overlap axH_overlap]);
+
+imagesc(axS, SharedMat);
+axis(axS, 'equal');
+axis(axS, 'tight');
+
+% Publication-style purple sequential colormap for shared-taxa counts.
+% Neutral relative to Case/Control red-blue interpretation.
+cmapS_base = [ ...
+    252 251 253;
+    239 237 245;
+    188 189 220;
+    117 107 177;
+     74  20 134] / 255;
+
+cmapS = interp1( ...
+    linspace(0,1,size(cmapS_base,1)), ...
+    cmapS_base, ...
+    linspace(0,1,256));
+
+colormap(figS, cmapS);
+
+maxShared = max(SharedMat(:), [], 'omitnan');
+minShared = min(SharedMat(:), [], 'omitnan');
+
+if isempty(maxShared) || isnan(maxShared)
+    maxShared = 1;
+end
+
+if isempty(minShared) || isnan(minShared)
+    minShared = 0;
+end
+
+cbS = colorbar(axS);
+cbS.Units = 'inches';
+cbS.Position = [left_overlap + axW_overlap + cbGap, bottom_overlap, cbW, axH_overlap];
+cbS.Ticks = unique([minShared, round((minShared + maxShared)/2), maxShared]);
+cbS.Label.String = 'Shared significant taxa';
+cbS.FontName = 'Arial';
+cbS.FontSize = 10;
+cbS.LineWidth = 0.7;
+
+axS.XTick = 1:nMethods;
+axS.XTickLabel = methodNamesOverlap;
+axS.YTick = 1:nMethods;
+axS.YTickLabel = methodNamesOverlap;
+axS.FontName = 'Arial';
+axS.FontSize = 11.5;
+axS.TickLength = [0 0];
+axS.LineWidth = 0.9;
+axS.TickLabelInterpreter = 'none';
+xtickangle(axS, 35);
+
+hold(axS, 'on');
+
+for i = 1:nMethods
+    for j = 1:nMethods
+
+        val = SharedMat(i,j);
+        labelStr = sprintf('%d', val);
+
+        if val >= 0.60 * maxShared
+            txtColor = [1 1 1];
+        else
+            txtColor = [0 0 0];
+        end
+
+        text(axS, j, i, labelStr, ...
+            'HorizontalAlignment','center', ...
+            'VerticalAlignment','middle', ...
+            'FontName','Arial', ...
+            'FontSize',10.5, ...
+            'Color',txtColor);
+    end
+end
+
+exportgraphics(figS, fullfile(outDir,'heatmap_shared_significant_taxa_counts.png'), ...
+    'Resolution',600, 'BackgroundColor','white');
+
+exportgraphics(figS, fullfile(outDir,'heatmap_shared_significant_taxa_counts.pdf'), ...
+    'ContentType','vector', 'BackgroundColor','white');
+
+%% ============================================================
+%  TOP 25 ASCA LOADINGS + METHOD-WISE EFFECTS
+%% ============================================================
+
+%% -----------------------------
+% Extract ASCA loadings
+%% -----------------------------
+load_disagree_raw  = -ascao.factors{1}.loads(:,1);
+load_consensus_raw = -ascao.factors{2}.loads(:,1);
+
+if numel(load_disagree_raw) ~= nTaxa || numel(load_consensus_raw) ~= nTaxa
+    error('ASCA loading length does not match number of taxa.');
+end
+
+%% -----------------------------
+% Align consensus loading direction with biological effect
+% Reference = C-ASCA median(Case) - median(Control)
+%
+% After alignment:
+%   positive consensus loading = higher in Case/CDI
+%   negative consensus loading = higher in Control/H
+%
+% Disagreement is method-related and is NOT biologically aligned.
+%% -----------------------------
+refEffect = eff_CASCA(:);
+
+rAlign_before = corr(load_consensus_raw(:), refEffect(:), 'Rows', 'complete');
+
+load_consensus = load_consensus_raw;
+
+if rAlign_before < 0
+    load_consensus = -load_consensus_raw;
+    fprintf('Consensus loading flipped to align with Case - Control effect.\n');
+else
+    fprintf('Consensus loading already aligned with Case - Control effect.\n');
+end
+
+rAlign_after = corr(load_consensus(:), refEffect(:), 'Rows', 'complete');
+
+fprintf('Correlation before alignment = %.6f\n', rAlign_before);
+fprintf('Correlation after alignment  = %.6f\n', rAlign_after);
+
+load_disagree = load_disagree_raw;
+
+%% -----------------------------
+% Select top 25 taxa by absolute aligned consensus loading
+%% -----------------------------
+rankScore = abs(load_consensus);
+
+[~, idxTop] = maxk(rankScore, min(topK, nTaxa));
+[~, ordTop] = sort(abs(load_consensus(idxTop)), 'descend');
+idxTop = idxTop(ordTop);
+
+lab_top = lab(idxTop);
+
+% Italic taxon labels for plotting only.
+% Keep method names and column labels non-italic.
+lab_top_italic = "\it " + lab_top;
+
+L_top = [load_disagree(idxTop), load_consensus(idxTop)];
+
+Effect_top = [ ...
+    eff_RAW(idxTop), ...
+    eff_TSS(idxTop), ...
+    eff_RARE(idxTop), ...
+    eff_CLR(idxTop), ...
+    eff_CASCA(idxTop)];
+
+Sig_top = [ ...
+    sig_RAW(idxTop), ...
+    sig_TSS(idxTop), ...
+    sig_RARE(idxTop), ...
+    sig_CLR(idxTop), ...
+    sig_CASCA(idxTop)];
+
+Q_top = [ ...
+    q_RAW(idxTop), ...
+    q_TSS(idxTop), ...
+    q_RARE(idxTop), ...
+    q_CLR(idxTop), ...
+    q_CASCA(idxTop)];
+
+methodNamesTop = {"Raw Data","TSS","Rarefaction","CLR","C-ASCA"};
+loadingNames = {'Disagreement','Consensus'};
+
+%% ============================================================
+%  CORRELATIONS: LOADINGS VS METHOD-WISE EFFECTS
+%% ============================================================
+
+consensus_top = L_top(:,2);
+disagree_top  = L_top(:,1);
+
+fprintf('\nCorrelation: aligned consensus loading vs method-wise effect\n');
+
+r_consensus_methods = nan(1, size(Effect_top,2));
+
+for m = 1:size(Effect_top,2)
+    r = corr(consensus_top(:), Effect_top(:,m), 'Rows', 'complete');
+    r_consensus_methods(m) = r;
+    fprintf('%s: r = %.4f\n', methodNamesTop{m}, r);
+end
+
+effectSD = std(Effect_top, 0, 2, 'omitnan');
+effectRange = max(Effect_top, [], 2) - min(Effect_top, [], 2);
+
+r_disagree_sd = corr(abs(disagree_top(:)), effectSD(:), 'Rows', 'complete');
+r_disagree_range = corr(abs(disagree_top(:)), effectRange(:), 'Rows', 'complete');
+
+fprintf('\nDisagreement loading vs method-dependence\n');
+fprintf('corr(abs(disagreement), SD of effects across methods) = %.4f\n', r_disagree_sd);
+fprintf('corr(abs(disagreement), range of effects across methods) = %.4f\n', r_disagree_range);
+
+T_corr = table( ...
+    string(methodNamesTop(:)), ...
+    r_consensus_methods(:), ...
+    'VariableNames', {'Method','Correlation_ConsensusLoading_vs_Effect'} );
+
+disp('Correlation between aligned consensus loading and method-wise effects:');
+disp(T_corr);
+
+writetable(T_corr, fullfile(outDir, 'correlation_consensus_loading_vs_method_effect.csv'));
+
+T_disagreement_corr = table( ...
+    r_disagree_sd, ...
+    r_disagree_range, ...
+    'VariableNames', {'CorrAbsDisagreement_vs_EffectSD','CorrAbsDisagreement_vs_EffectRange'} );
+
+disp('Correlation between disagreement loading and method-dependence:');
+disp(T_disagreement_corr);
+
+writetable(T_disagreement_corr, fullfile(outDir, 'correlation_disagreement_vs_method_dependence.csv'));
+
+%% -----------------------------
+% Save top-25 table only
+%% -----------------------------
+T_top25 = table( ...
+    lab_top(:), ...
+    L_top(:,1), L_top(:,2), ...
+    eff_RAW(idxTop),   q_RAW(idxTop),   sig_RAW(idxTop), ...
+    eff_TSS(idxTop),   q_TSS(idxTop),   sig_TSS(idxTop), ...
+    eff_RARE(idxTop),  q_RARE(idxTop),  sig_RARE(idxTop), ...
+    eff_CLR(idxTop),   q_CLR(idxTop),   sig_CLR(idxTop), ...
+    eff_CASCA(idxTop), q_CASCA(idxTop), sig_CASCA(idxTop), ...
+    effectSD(:), effectRange(:), ...
+    'VariableNames', { ...
+        'Taxon', ...
+        'DisagreementLoading','AlignedConsensusLoading', ...
+        'Effect_RAW','Q_RAW','Sig_RAW', ...
+        'Effect_TSS','Q_TSS','Sig_TSS', ...
+        'Effect_Rarefaction','Q_Rarefaction','Sig_Rarefaction', ...
+        'Effect_CLR','Q_CLR','Sig_CLR', ...
+        'Effect_CASCA','Q_CASCA','Sig_CASCA', ...
+        'EffectSD_AcrossMethods','EffectRange_AcrossMethods'} );
+
+disp('Top 25 ASCA taxa with aligned consensus loading and method-wise effects:');
+disp(T_top25);
+
+writetable(T_top25, fullfile(outDir, 'top25_ASCA_aligned_consensus_methodwise_effects.csv'));
+
+%% ============================================================
+%  PANEL A: TOP 25 ASCA LOADING HEATMAP
+%  Cell size harmonized with overlap heatmaps
+%% ============================================================
+
+cmap = local_blue_white_red(256);
+
+nRowsTop = numel(idxTop);
+nLoadCols = size(L_top,2);
+
+axW_A = nLoadCols * cellW_top;
+axH_A = nRowsTop * cellH_top;
+
+labelW_A = 3.45;
+left_A   = 0.20;
+bottom_A = 0.75;
+gap_A    = 0.12;
+right_A  = 0.35;
+top_A    = 0.35;
+
+figW_A = left_A + labelW_A + gap_A + axW_A + cbGap + cbW + right_A;
+figH_A = bottom_A + axH_A + top_A;
+
+figA = figure('Color','w', ...
+    'Units','inches', ...
+    'Position',[1 1 figW_A figH_A], ...
+    'PaperPositionMode','auto');
+
+axA = axes(figA, ...
+    'Units','inches', ...
+    'Position',[left_A + labelW_A + gap_A, bottom_A, axW_A, axH_A]);
+
+imagesc(axA, L_top);
+colormap(figA, cmap);
+caxis(axA, [-1 1]);
+
+axA.XTick = 1:nLoadCols;
+axA.XTickLabel = loadingNames;
+axA.YTick = 1:nRowsTop;
+axA.YTickLabel = [];
+axA.FontName = 'Arial';
+axA.FontSize = 11.5;
+axA.TickLength = [0 0];
+axA.LineWidth = 0.9;
+xtickangle(axA, 35);
+set(axA, 'TickLabelInterpreter', 'none');
+
+title(axA, 'A', ...
+    'FontName','Arial', ...
+    'FontWeight','bold', ...
+    'FontSize',13);
+
+hold(axA, 'on');
+
+% Left-aligned taxa labels
+xLabelPos_A = -5.35;
+
+for i = 1:nRowsTop
+    text(axA, xLabelPos_A, i, lab_top_italic(i), ...
+        'HorizontalAlignment','left', ...
+        'VerticalAlignment','middle', ...
+        'FontName','Arial', ...
+        'FontSize',9.5, ...
+        'Interpreter','tex', ...
+        'Clipping','off', ...
+        'Color',[0 0 0]);
+end
+
+for i = 1:size(L_top,1)
+    for j = 1:size(L_top,2)
+
+        val = L_top(i,j);
+
+        if abs(val) > 0.55
+            txtColor = [1 1 1];
+        else
+            txtColor = [0 0 0];
+        end
+
+        valDisplay = round(val, nDec);
+        if abs(valDisplay) < 10^(-nDec)
+            valDisplay = 0;
+        end
+
+        text(axA, j, i, sprintf(['%.' num2str(nDec) 'f'], valDisplay), ...
+            'HorizontalAlignment','center', ...
+            'VerticalAlignment','middle', ...
+            'FontName','Arial', ...
+            'FontSize',8.2, ...
+            'Color',txtColor);
+    end
+end
+
+cbA = colorbar(axA);
+cbA.Units = 'inches';
+cbA.Position = [left_A + labelW_A + gap_A + axW_A + cbGap, bottom_A, cbW, axH_A];
+cbA.Ticks = [-1 0 1];
+cbA.TickLabels = {'-1','0','1'};
+cbA.Label.String = 'ASCA loading';
+cbA.FontName = 'Arial';
+cbA.FontSize = 9.5;
+cbA.LineWidth = 0.7;
+
+exportgraphics(figA, fullfile(outDir,'top25_ASCA_aligned_loadings_heatmap.png'), ...
+    'Resolution',600, 'BackgroundColor','white');
+
+exportgraphics(figA, fullfile(outDir,'top25_ASCA_aligned_loadings_heatmap.pdf'), ...
+    'ContentType','vector', 'BackgroundColor','white');
+
+%% ============================================================
+%  PANEL B: TOP 25 METHOD-WISE EFFECT HEATMAP
+%  Cell size harmonized with loading and overlap heatmaps
+%% ============================================================
+
+nEffectCols = size(Effect_top,2);
+
+axW_B = nEffectCols * cellW_top;
+axH_B = nRowsTop * cellH_top;
+
+labelW_B = 3.45;
+left_B   = 0.20;
+bottom_B = 0.75;
+gap_B    = 0.12;
+right_B  = 0.35;
+top_B    = 0.35;
+
+figW_B = left_B + labelW_B + gap_B + axW_B + cbGap + cbW + right_B;
+figH_B = bottom_B + axH_B + top_B;
+
+figB = figure('Color','w', ...
+    'Units','inches', ...
+    'Position',[1 1 figW_B figH_B], ...
+    'PaperPositionMode','auto');
+
+axB = axes(figB, ...
+    'Units','inches', ...
+    'Position',[left_B + labelW_B + gap_B, bottom_B, axW_B, axH_B]);
+
+imagesc(axB, Effect_top);
+colormap(figB, cmap);
+caxis(axB, [-1 1]);
+
+axB.XTick = 1:nEffectCols;
+axB.XTickLabel = methodNamesTop;
+axB.YTick = 1:nRowsTop;
+axB.YTickLabel = lab_top_italic;
+axB.FontName = 'Arial';
+axB.FontSize = 11.5;
+axB.TickLength = [0 0];
+axB.LineWidth = 0.9;
+xtickangle(axB, 35);
+set(axB, 'TickLabelInterpreter', 'tex');
+
+title(axB, 'B', ...
+    'FontName','Arial', ...
+    'FontWeight','bold', ...
+    'FontSize',13);
+
+hold(axB, 'on');
+
+for i = 1:size(Effect_top,1)
+    for j = 1:size(Effect_top,2)
+
+        val = Effect_top(i,j);
+
+        if abs(val) > 0.55
+            txtColor = [1 1 1];
+        else
+            txtColor = [0 0 0];
+        end
+
+        valDisplay = round(val, nDec);
+        if abs(valDisplay) < 10^(-nDec)
+            valDisplay = 0;
+        end
+
+        text(axB, j, i, sprintf(['%.' num2str(nDec) 'f'], valDisplay), ...
+            'HorizontalAlignment','center', ...
+            'VerticalAlignment','middle', ...
+            'FontName','Arial', ...
+            'FontSize',8.2, ...
+            'Color',txtColor);
+
+        if Sig_top(i,j)
+            text(axB, j, i-0.30, '*', ...
+                'HorizontalAlignment','center', ...
+                'VerticalAlignment','middle', ...
+                'FontName','Arial', ...
+                'FontWeight','bold', ...
+                'FontSize',12.5, ...
+                'Color',[0 0 0]);
+        end
+    end
+end
+
+cbB = colorbar(axB);
+cbB.Units = 'inches';
+cbB.Position = [left_B + labelW_B + gap_B + axW_B + cbGap, bottom_B, cbW, axH_B];
+cbB.Ticks = [-1 0 1];
+cbB.TickLabels = {'-1','0','1'};
+cbB.Label.String = 'Median(Case) - Median(Control)';
+cbB.FontName = 'Arial';
+cbB.FontSize = 9.5;
+cbB.LineWidth = 0.7;
+
+exportgraphics(figB, fullfile(outDir,'top25_methodwise_effect_heatmap.png'), ...
+    'Resolution',600, 'BackgroundColor','white');
+
+exportgraphics(figB, fullfile(outDir,'top25_methodwise_effect_heatmap.pdf'), ...
+    'ContentType','vector', 'BackgroundColor','white');
+
+%% ============================================================
+%  COMBINED PANEL A+B
+%  Harmonized cell sizes
+%% ============================================================
+
+combinedLabelW = 3.45;
+combinedGap1 = 0.12;
+combinedGap2 = 0.70;
+combinedCbGap = 0.14;
+combinedCbW = 0.16;
+
+axW_CA = nLoadCols * cellW_top;
+axW_CB = nEffectCols * cellW_top;
+axH_C  = nRowsTop * cellH_top;
+
+left_C   = 0.20;
+bottom_C = 0.75;
+right_C  = 0.30;
+top_C    = 0.35;
+
+x_CA = left_C + combinedLabelW + combinedGap1;
+x_cbA = x_CA + axW_CA + combinedCbGap;
+x_CB = x_cbA + combinedCbW + combinedGap2;
+x_cbB = x_CB + axW_CB + combinedCbGap;
+
+figW_C = x_cbB + combinedCbW + right_C;
+figH_C = bottom_C + axH_C + top_C;
+
+figC = figure('Color','w', ...
+    'Units','inches', ...
+    'Position',[1 1 figW_C figH_C], ...
+    'PaperPositionMode','auto');
+
+%% Panel A in combined figure
+axCA = axes(figC, ...
+    'Units','inches', ...
+    'Position',[x_CA bottom_C axW_CA axH_C]);
+
+imagesc(axCA, L_top);
+colormap(axCA, cmap);
+caxis(axCA, [-1 1]);
+
+axCA.XTick = 1:nLoadCols;
+axCA.XTickLabel = loadingNames;
+axCA.YTick = 1:nRowsTop;
+axCA.YTickLabel = [];
+axCA.FontName = 'Arial';
+axCA.FontSize = 10.8;
+axCA.TickLength = [0 0];
+axCA.LineWidth = 0.9;
+xtickangle(axCA, 35);
+set(axCA, 'TickLabelInterpreter', 'none');
+
+title(axCA, 'D', 'FontWeight','bold', 'FontSize',13);
+
+hold(axCA, 'on');
+
+xLabelPos_CA = -3.02;
+
+for i = 1:nRowsTop
+    text(axCA, xLabelPos_CA, i, lab_top_italic(i), ...
+        'HorizontalAlignment','left', ...
+        'VerticalAlignment','middle', ...
+        'FontName','Arial', ...
+        'FontSize',9.2, ...
+        'Interpreter','tex', ...
+        'Clipping','off', ...
+        'Color',[0 0 0]);
+end
+
+for i = 1:size(L_top,1)
+    for j = 1:size(L_top,2)
+
+        val = L_top(i,j);
+
+        if abs(val) > 0.55
+            txtColor = [1 1 1];
+        else
+            txtColor = [0 0 0];
+        end
+
+        valDisplay = round(val, nDec);
+        if abs(valDisplay) < 10^(-nDec)
+            valDisplay = 0;
+        end
+
+        text(axCA, j, i, sprintf(['%.' num2str(nDec) 'f'], valDisplay), ...
+            'HorizontalAlignment','center', ...
+            'VerticalAlignment','middle', ...
+            'FontName','Arial', ...
+            'FontSize',7.8, ...
+            'Color',txtColor);
+    end
+end
+
+cbCA = colorbar(axCA);
+cbCA.Units = 'inches';
+cbCA.Position = [x_cbA bottom_C combinedCbW axH_C];
+cbCA.Ticks = [-1 0 1];
+cbCA.TickLabels = {'-1','0','1'};
+cbCA.Label.String = 'ASCA loading';
+cbCA.FontName = 'Arial';
+cbCA.FontSize = 8.8;
+cbCA.LineWidth = 0.7;
+
+%% Panel B in combined figure
+axCB = axes(figC, ...
+    'Units','inches', ...
+    'Position',[x_CB bottom_C axW_CB axH_C]);
+
+imagesc(axCB, Effect_top);
+colormap(axCB, cmap);
+caxis(axCB, [-1 1]);
+
+axCB.XTick = 1:nEffectCols;
+axCB.XTickLabel = methodNamesTop;
+axCB.YTick = 1:nRowsTop;
+axCB.YTickLabel = [];
+axCB.FontName = 'Arial';
+axCB.FontSize = 10.8;
+axCB.TickLength = [0 0];
+axCB.LineWidth = 0.9;
+xtickangle(axCB, 35);
+set(axCB, 'TickLabelInterpreter', 'none');
+
+title(axCB, 'E', 'FontWeight','bold', 'FontSize',13);
+
+hold(axCB, 'on');
+
+for i = 1:size(Effect_top,1)
+    for j = 1:size(Effect_top,2)
+
+        val = Effect_top(i,j);
+
+        if abs(val) > 0.55
+            txtColor = [1 1 1];
+        else
+            txtColor = [0 0 0];
+        end
+
+        valDisplay = round(val, nDec);
+        if abs(valDisplay) < 10^(-nDec)
+            valDisplay = 0;
+        end
+
+        text(axCB, j, i, sprintf(['%.' num2str(nDec) 'f'], valDisplay), ...
+            'HorizontalAlignment','center', ...
+            'VerticalAlignment','middle', ...
+            'FontName','Arial', ...
+            'FontSize',7.8, ...
+            'Color',txtColor);
+
+        if Sig_top(i,j)
+            text(axCB, j, i-0.30, '*', ...
+                'HorizontalAlignment','center', ...
+                'VerticalAlignment','middle', ...
+                'FontName','Arial', ...
+                'FontWeight','bold', ...
+                'FontSize',12.0, ...
+                'Color',[0 0 0]);
+        end
+    end
+end
+
+cbCB = colorbar(axCB);
+cbCB.Units = 'inches';
+cbCB.Position = [x_cbB bottom_C combinedCbW axH_C];
+cbCB.Ticks = [-1 0 1];
+cbCB.TickLabels = {'-1','0','1'};
+cbCB.Label.String = 'Median(Case) - Median(Control)';
+cbCB.FontName = 'Arial';
+cbCB.FontSize = 8.8;
+cbCB.LineWidth = 0.7;
+
+exportgraphics(figC, fullfile(outDir,'top25_ASCA_aligned_combined_panel.png'), ...
+    'Resolution',600, 'BackgroundColor','white');
+
+exportgraphics(figC, fullfile(outDir,'top25_ASCA_aligned_combined_panel.pdf'), ...
+    'ContentType','vector', 'BackgroundColor','white');
+
+disp('Saved pairwise overlap summaries and top-25 ASCA/method-wise heatmaps.');
+
+%% ============================================================
+%  LOCAL FUNCTION: Kruskal-Wallis + BH-FDR
+%% ============================================================
+
+function [pvals, qvals, isSig, effect] = local_kw_bh_feature_test(Xblock, g, alpha)
+
+    if nargin < 3
+        alpha = 0.05;
+    end
+
+    g = g(:);
+
+    if size(Xblock,1) ~= numel(g)
+        error('Rows of Xblock must match group vector length.');
+    end
+
+    p = size(Xblock,2);
+
+    pvals = nan(p,1);
+    qvals = nan(p,1);
+    isSig = false(p,1);
+    effect = nan(p,1);
+
+    for j = 1:p
+
+        x = Xblock(:,j);
+
+        valid = ~isnan(x) & ~isnan(g);
+        xj = x(valid);
+        gj = g(valid);
+
+        if numel(unique(gj)) < 2
+            pvals(j) = NaN;
+            effect(j) = NaN;
+            continue;
+        end
+
+        if numel(unique(xj)) <= 1
+            pvals(j) = 1;
+            effect(j) = 0;
+            continue;
+        end
+
+        pvals(j) = kruskalwallis(xj, gj, 'off');
+
+        x_case = xj(gj == 1);
+        x_ctrl = xj(gj == -1);
+
+        effect(j) = median(x_case, 'omitnan') - median(x_ctrl, 'omitnan');
+    end
+
+    qvals = local_bh_fdr(pvals);
+    isSig = qvals <= alpha;
+end
+
+%% ============================================================
+%  LOCAL FUNCTION: BH-FDR
+%% ============================================================
+
+function q = local_bh_fdr(p)
+
+    p = p(:);
+    q = nan(size(p));
+
+    valid = ~isnan(p);
+    pv = p(valid);
+
+    if isempty(pv)
+        return;
+    end
+
+    [pv_sorted, order] = sort(pv, 'ascend');
+    m = numel(pv_sorted);
+
+    q_sorted = pv_sorted .* m ./ (1:m)';
+
+    for i = m-1:-1:1
+        q_sorted(i) = min(q_sorted(i), q_sorted(i+1));
+    end
+
+    q_sorted(q_sorted > 1) = 1;
+
+    q_valid = nan(size(pv));
+    q_valid(order) = q_sorted;
+
+    q(valid) = q_valid;
+end
+
+%% ============================================================
+%  LOCAL FUNCTION: blue-white-red colormap
+%% ============================================================
+
+function cmap = local_blue_white_red(n)
+
+    if nargin < 1
+        n = 256;
+    end
+
+    half = floor(n/2);
+
+    blue  = [0.000 0.447 0.741];
+    white = [1.000 1.000 1.000];
+    red   = [0.850 0.000 0.000];
+
+    cmap1 = [linspace(blue(1),  white(1), half)', ...
+             linspace(blue(2),  white(2), half)', ...
+             linspace(blue(3),  white(3), half)'];
+
+    cmap2 = [linspace(white(1), red(1), n-half)', ...
+             linspace(white(2), red(2), n-half)', ...
+             linspace(white(3), red(3), n-half)'];
+
+    cmap = [cmap1; cmap2];
+end

@@ -1,0 +1,542 @@
+clc;
+clearvars;
+close all;
+
+%% =========================
+%  Load data
+%  =========================
+load diarrhea.mat;
+
+
+lab = string(lab(:));
+
+assert(numel(lab) == 158, ...
+    'Expected 158 taxonomic-feature labels, but got %d.', numel(lab));
+
+
+
+
+
+
+%% =========================
+%  Output folder
+%  =========================
+outDir = fullfile(pwd, 'Figures_JPG');
+if ~exist(outDir, 'dir')
+    mkdir(outDir);
+end
+
+exportResolution = 600;
+
+%% =========================
+%  Build X matrix
+%  =========================
+X = table2array(Datos(:, 1:(size(Datos,2)-3)));
+depth = sum(X, 2);
+
+%% =========================
+%  Encode Method robustly
+%  =========================
+MethodStr = string(Datos.Methods);
+MethodStr = strtrim(MethodStr);
+
+Method = nan(numel(MethodStr), 1);
+Method(ismember(lower(MethodStr), ["raw data","raw"])) = 1;
+Method(upper(MethodStr) == "TSS") = 2;
+Method(lower(MethodStr) == "rarefaction") = 3;
+Method(ismember(upper(MethodStr), ["CLR","RCLR"])) = 4;
+
+if any(isnan(Method))
+    badMethods = unique(MethodStr(isnan(Method)));
+    error('Unrecognized method labels found: %s', strjoin(cellstr(badMethods), ', '));
+end
+
+%% =========================
+%  Encode Group robustly
+%  =========================
+Groups = string(Datos.comparison);
+Groups = strtrim(Groups);
+
+Group = nan(numel(Groups), 1);
+Group(Groups == "H")   = -1;
+Group(Groups == "CDI") =  1;
+
+if any(isnan(Group))
+    badGroups = unique(Groups(isnan(Group)));
+    error('Unrecognized group labels found: %s', strjoin(cellstr(badGroups), ', '));
+end
+
+%% =========================
+%  Observation index
+%  =========================
+observation = Datos.observation;
+
+%% =========================
+%  Block-wise normalization
+%  =========================
+Y = X;
+d = depth;
+
+num_parts = 4;
+row_size = size(X,1) / num_parts;
+
+if mod(size(X,1), num_parts) ~= 0
+    error('Number of rows in X must be divisible by %d.', num_parts);
+end
+
+for i = 1:num_parts
+
+    idx = (i-1)*row_size + 1 : i*row_size;
+
+    part = X(idx, :);
+    part2 = preprocess2D(part, 'Preprocessing', 1);
+
+    sum_sq = sum(part2(:).^2);
+
+    if sum_sq > 0
+        part = part / sqrt(sum_sq);
+    end
+
+    Y(idx, :) = part;
+    d(idx, :) = tiedrank(depth(idx));
+end
+
+X = Y;
+depth = d;
+
+%% =========================
+%  PARGLM + ASCA
+%  =========================
+F = [Method, Group, observation, depth];
+
+[T, parglmStruct] = parglm(X, F, ...
+    'Preprocessing', 1, ...
+    'Model', [1 2], ...
+    'Ordinal', [0 0 0 1], ...
+    'Random',  [0 0 1 0], ...
+    'Nested',  [2 3]);
+
+disp("ASCA with SSQ");
+
+if height(T) >= 5
+    T.Source(1:5) = {'A', 'B', 'C(B)', 'D', 'AB'};
+end
+
+disp(T);
+
+ascao = asca(parglmStruct);
+
+%% =========================
+%  Clean labels for plotting
+%  =========================
+G = string(Group);
+G(G == "-1") = "Control";
+G(G == "1")  = "Case";
+
+Mtr = string(Datos.Methods);
+Mtr = strtrim(Mtr);
+Mtr(lower(Mtr) == "raw data")    = "Raw Data";
+Mtr(upper(Mtr) == "TSS")         = "TSS";
+Mtr(lower(Mtr) == "rarefaction") = "Rarefaction";
+Mtr(upper(Mtr) == "RCLR")        = "CLR";
+Mtr(upper(Mtr) == "CLR")         = "CLR";
+
+methodOrder = ["Raw Data", "TSS", "Rarefaction", "CLR"];
+groupOrder  = ["Control", "Case"];
+
+%% ============================================================
+%  SCORE PLOT 1: FACTOR 1 / DISAGREEMENT
+%  ============================================================
+plotScores1DOutside( ...
+    ascao.factors{1}.matrix, ...
+    Mtr, ...
+    1, ...
+    methodOrder, ...
+    "", ...
+    "", ...
+    fullfile(outDir, "Factor1_disagreement_scores_by_method"), ...
+    exportResolution);
+
+%% ============================================================
+%  SCORE PLOT 2: FACTOR 2 / CONSENSUS
+%  ============================================================
+plotScores1DOutside( ...
+    ascao.factors{2}.matrix, ...
+    G, ...
+    1, ...
+    groupOrder, ...
+    "", ...
+    "", ...
+    fullfile(outDir, "Factor2_consensus_scores_by_group"), ...
+    exportResolution);
+
+%% ============================================================
+%  SCORE PLOT 3: COMBINED MODEL M
+%  M = disagreement + consensus + interaction
+%  Color = method
+%  Marker = group
+%  ============================================================
+if ~isfield(ascao, 'interactions') || isempty(ascao.interactions)
+
+    warning('No interaction matrix found in ascao.interactions. Combined model score plot skipped.');
+
+else
+
+    M = ascao.factors{1}.matrix + ...
+        ascao.factors{2}.matrix + ...
+        ascao.interactions{1}.matrix;
+
+    plotCombinedModelScores( ...
+        M, ...
+        Mtr, ...
+        G, ...
+        methodOrder, ...
+        groupOrder, ...
+        fullfile(outDir, "combined_model_scores"), ...
+        exportResolution);
+end
+
+
+%% ============================================================
+%  LOCAL FUNCTIONS MUST BE AT THE END OF THE SCRIPT
+%  ============================================================
+
+function plotScores1DOutside(X, classLabels, pcToPlot, classOrder, figTitle, xLabelText, outBase, exportResolution)
+
+    X = double(X);
+    classLabels = string(classLabels(:));
+    classOrder  = string(classOrder(:));
+
+    if size(X,1) ~= numel(classLabels)
+        error('Number of rows in X must match number of class labels.');
+    end
+
+    if pcToPlot < 1
+        error('pcToPlot must be >= 1.');
+    end
+
+    X0 = X - mean(X, 1, 'omitnan');
+    X0(isnan(X0)) = 0;
+
+    [U, S, ~] = svd(X0, 'econ');
+
+    score = U * S;
+    eigvals = diag(S).^2;
+    explained = 100 * eigvals ./ sum(eigvals);
+
+    if pcToPlot > size(score,2)
+        error('Requested PC%d, but only %d PCs are available.', pcToPlot, size(score,2));
+    end
+
+    y = score(:, pcToPlot);
+    pcPerc = explained(pcToPlot);
+
+    nClass = numel(classOrder);
+    cmap = zeros(nClass, 3);
+
+    for k = 1:nClass
+        cmap(k,:) = getClassColor(classOrder(k));
+    end
+
+    fig = figure( ...
+        'Color', 'w', ...
+        'Units', 'inches', ...
+        'Position', [1 1 10.8 5.2], ...
+        'PaperPositionMode', 'auto');
+
+    ax = axes(fig);
+    hold(ax, 'on');
+
+    jitterWidth = 0.28;
+    hLegend = gobjects(nClass,1);
+
+    rng(1);
+
+    for k = 1:nClass
+
+        idx = classLabels == classOrder(k);
+
+        if ~any(idx)
+            warning('Class "%s" not found in labels.', classOrder(k));
+            continue;
+        end
+
+        yk = y(idx);
+        xk = k + (rand(sum(idx),1) - 0.5) * jitterWidth;
+
+        scatter(ax, xk, yk, ...
+            42, ...
+            'MarkerFaceColor', cmap(k,:), ...
+            'MarkerEdgeColor', 'none', ...
+            'MarkerFaceAlpha', 0.35);
+
+        mu = mean(yk, 'omitnan');
+        sd = std(yk, 0, 'omitnan');
+
+        hLegend(k) = errorbar(ax, k, mu, sd, ...
+            'o', ...
+            'MarkerSize', 10, ...
+            'LineWidth', 1.8, ...
+            'Color', cmap(k,:), ...
+            'MarkerFaceColor', cmap(k,:), ...
+            'MarkerEdgeColor', cmap(k,:), ...
+            'CapSize', 10);
+    end
+
+    yline(ax, 0, '-', ...
+        'Color', [0.2 0.2 0.2], ...
+        'LineWidth', 1.1);
+
+    xlim(ax, [0.5 nClass + 0.5]);
+
+    ax.XTick = 1:nClass;
+    ax.XTickLabel = classOrder;
+    ax.FontName = 'Arial';
+    ax.FontSize = 14;
+    ax.LineWidth = 1.2;
+    ax.Box = 'off';
+    ax.TickDir = 'out';
+
+    xtickangle(ax, 35);
+
+    grid(ax, 'on');
+    ax.GridAlpha = 0.20;
+    ax.XGrid = 'off';
+
+    ylabel(ax, sprintf('PC%d score (%.1f%% explained)', pcToPlot, pcPerc), ...
+        'FontName', 'Arial', ...
+        'FontSize', 16, ...
+        'FontWeight', 'bold');
+
+    xlabel(ax, xLabelText, ...
+        'FontName', 'Arial', ...
+        'FontSize', 16, ...
+        'FontWeight', 'bold');
+
+    title(ax, figTitle, ...
+        'FontName', 'Arial', ...
+        'FontSize', 18, ...
+        'FontWeight', 'bold');
+
+    validLegend = isgraphics(hLegend);
+
+    leg = legend(ax, hLegend(validLegend), classOrder(validLegend), ...
+        'Location', 'eastoutside', ...
+        'Box', 'off', ...
+        'FontName', 'Arial', ...
+        'FontSize', 13);
+
+    leg.ItemTokenSize = [18 18];
+
+    exportgraphics(fig, outBase + ".png", ...
+        'Resolution', exportResolution, ...
+        'BackgroundColor', 'white');
+
+    exportgraphics(fig, outBase + ".pdf", ...
+        'ContentType', 'vector', ...
+        'BackgroundColor', 'white');
+
+    disp("Saved:");
+    disp(outBase + ".png");
+    disp(outBase + ".pdf");
+
+end
+
+
+function plotCombinedModelScores(M, methodLabels, groupLabels, methodOrder, groupOrder, outBase, exportResolution)
+
+    M = double(M);
+    methodLabels = string(methodLabels(:));
+    groupLabels  = string(groupLabels(:));
+    methodOrder  = string(methodOrder(:));
+    groupOrder   = string(groupOrder(:));
+
+    if size(M,1) ~= numel(methodLabels) || size(M,1) ~= numel(groupLabels)
+        error('M, methodLabels, and groupLabels must have the same number of rows.');
+    end
+
+    Xcomb = M - mean(M, 1, 'omitnan');
+    Xcomb(isnan(Xcomb)) = 0;
+
+    [~, scoreComb, ~, ~, explainedComb] = pca(Xcomb, 'Rows', 'complete');
+
+    cmapMethods = zeros(numel(methodOrder), 3);
+    for i = 1:numel(methodOrder)
+        cmapMethods(i,:) = getClassColor(methodOrder(i));
+    end
+
+    figComb = figure( ...
+        'Color', 'w', ...
+        'Units', 'inches', ...
+        'Position', [1 1 7.8 5.2], ...
+        'InvertHardcopy', 'off', ...
+        'PaperPositionMode', 'auto');
+
+    axComb = axes(figComb, ...
+        'Units', 'normalized', ...
+        'Position', [0.12 0.17 0.60 0.75]);
+
+    hold(axComb, 'on');
+
+    markerSize = 120;
+
+    for i = 1:numel(methodOrder)
+
+        idxM = methodLabels == methodOrder(i);
+
+        for j = 1:numel(groupOrder)
+
+            idxG = groupLabels == groupOrder(j);
+            idx  = idxM & idxG;
+
+            if ~any(idx)
+                continue;
+            end
+
+            if groupOrder(j) == "Control"
+                mk = 'o';
+            elseif groupOrder(j) == "Case"
+                mk = '^';
+            else
+                mk = 's';
+            end
+
+            scatter(axComb, scoreComb(idx,1), scoreComb(idx,2), ...
+                markerSize, ...
+                'Marker', mk, ...
+                'MarkerEdgeColor', cmapMethods(i,:), ...
+                'MarkerFaceColor', cmapMethods(i,:), ...
+                'MarkerFaceAlpha', 0.82, ...
+                'MarkerEdgeAlpha', 0.95, ...
+                'LineWidth', 0.9);
+        end
+    end
+
+    xline(axComb, 0, 'k-', 'LineWidth', 0.7);
+    yline(axComb, 0, 'k-', 'LineWidth', 0.7);
+
+    xlabel(axComb, sprintf('PC1 (%.1f%%)', explainedComb(1)), ...
+        'FontSize', 15, ...
+        'FontWeight', 'bold', ...
+        'FontName', 'Arial');
+
+    ylabel(axComb, sprintf('PC2 (%.1f%%)', explainedComb(2)), ...
+        'FontSize', 15, ...
+        'FontWeight', 'bold', ...
+        'FontName', 'Arial');
+
+    box(axComb, 'on');
+    grid(axComb, 'on');
+
+    axComb.GridAlpha = 0.15;
+    axComb.FontName = 'Arial';
+    axComb.FontSize = 13;
+    axComb.LineWidth = 1.0;
+    axComb.TickDir = 'out';
+
+    axis(axComb, 'tight');
+
+    xl = xlim(axComb);
+    yl = ylim(axComb);
+
+    dx = 0.05 * max(eps, diff(xl));
+    dy = 0.05 * max(eps, diff(yl));
+
+    xlim(axComb, [xl(1)-dx, xl(2)+dx]);
+    ylim(axComb, [yl(1)-dy, yl(2)+dy]);
+
+    %% Method legend
+
+    hMethod = gobjects(numel(methodOrder),1);
+
+    for i = 1:numel(methodOrder)
+        hMethod(i) = scatter(axComb, nan, nan, markerSize, ...
+            'o', ...
+            'MarkerEdgeColor', cmapMethods(i,:), ...
+            'MarkerFaceColor', cmapMethods(i,:), ...
+            'LineWidth', 0.9);
+    end
+
+    %% Group legend
+
+    hGroup = gobjects(2,1);
+
+    hGroup(1) = scatter(axComb, nan, nan, markerSize, ...
+        'o', ...
+        'MarkerEdgeColor', 'k', ...
+        'MarkerFaceColor', 'k', ...
+        'LineWidth', 0.9);
+
+    hGroup(2) = scatter(axComb, nan, nan, markerSize, ...
+        '^', ...
+        'MarkerEdgeColor', 'k', ...
+        'MarkerFaceColor', 'k', ...
+        'LineWidth', 0.9);
+
+    hSep = plot(axComb, nan, nan, ...
+        'LineStyle', 'none', ...
+        'Marker', 'none', ...
+        'Color', 'none');
+
+    hLegend = [hMethod; hSep; hGroup(:)];
+
+    legendLabels = [ ...
+        cellstr(methodOrder(:)); ...
+        {''}; ...
+        {'Control'; 'Case'}];
+
+    leg = legend(axComb, hLegend, legendLabels, ...
+        'Units', 'normalized', ...
+        'Location', 'eastoutside', ...
+        'FontSize', 12, ...
+        'FontName', 'Arial', ...
+        'Box', 'on');
+
+    leg.EdgeColor = [0 0 0];
+    leg.LineWidth = 0.6;
+    title(leg, '');
+
+    exportgraphics(figComb, outBase + ".png", ...
+        'Resolution', exportResolution, ...
+        'BackgroundColor', 'white');
+
+    exportgraphics(figComb, outBase + ".pdf", ...
+        'ContentType', 'vector', ...
+        'BackgroundColor', 'white');
+
+    disp("Saved combined model score plot:");
+    disp(outBase + ".png");
+    disp(outBase + ".pdf");
+
+end
+
+
+function rgb = getClassColor(className)
+
+    className = string(className);
+
+    switch className
+
+        case "Raw Data"
+            rgb = [0.0000 0.6000 0.2500];   % green
+
+        case "TSS"
+            rgb = [0.6350 0.0780 0.1840];   % dark red
+
+        case "Rarefaction"
+            rgb = [0.9290 0.6940 0.1250];   % golden yellow
+
+        case "CLR"
+            rgb = [0.4940 0.1840 0.5560];   % purple
+
+        case "Control"
+            rgb = [0.0000 0.4470 0.7410];   % blue
+
+        case "Case"
+            rgb = [0.8500 0.3250 0.0980];   % orange
+
+        otherwise
+            rgb = [0.3000 0.3000 0.3000];   % gray fallback
+    end
+
+end
