@@ -51,7 +51,7 @@ schubert
 To compute overlap and method-comparison results for the Schubert dataset, run:
 
 schubert_overlap
-Important notes
+#Important notes
 
 The MEDA Toolbox must be added to the MATLAB path before running any C-ASCA script.
 
@@ -60,14 +60,14 @@ If MATLAB reports missing functions, check that both MEDA-Toolbox-1.12 and this 
 If MATLAB reports missing input files, check that the dataset files are located in the directory expected by the scripts.
 
 If the scripts contain local file paths, update those paths before running the analysis.
-
+#Cition
 If you use this code, please cite the associated manuscript:
 
 Al Khafaji A, Gómez-Llorente C, Camacho J. Consensus ANOVA--Simultaneous Component Analysis for the Normalization of Metagenomics Data.
 
 Update this citation with the final journal reference once the manuscript is published.
 
-Contact
+#Contact
 
 For questions about the code, please contact:
 
