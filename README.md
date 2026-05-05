@@ -1,54 +1,203 @@
-# C-ASCA for Metagenomics DataThis repository contains MATLAB code for applying **Consensus ANOVA--Simultaneous Component Analysis (C-ASCA)** to metagenomics count data.C-ASCA extends ASCA to integrate multiple preprocessing or normalization outputs from the same microbiome dataset into a multiblock model. The framework separates normalization-dependent disagreement from shared biological consensus and exports a consensus representation for downstream analysis.## RequirementsThis code requires:- MATLAB- MEDA Toolbox version 1.12Download MEDA-Toolbox-1.12 from:https://github.com/josecamachop/MEDA-ToolboxAfter downloading MEDA, add it to your MATLAB path:```matlabaddpath(genpath('path_to/MEDA-Toolbox-1.12'));savepath;
-Replace path_to/MEDA-Toolbox-1.12 with the actual path on your computer.
-Then add this C-ASCA repository to the MATLAB path:
-addpath(genpath('path_to/CASCA_repository'));savepath;
-Replace path_to/CASCA_repository with the actual path of this repository.
-Simulation analysis
-To run the simulation analysis:
+# C-ASCA for Metagenomics Data
+
+This repository contains MATLAB code for applying **Consensus ANOVA–Simultaneous Component Analysis (C-ASCA)** to metagenomics count data using multiple normalization outputs from the same microbiome dataset.
+
+C-ASCA extends the classical ASCA framework by integrating several preprocessing or normalization methods into a multiblock model. The method separates normalization-dependent disagreement from shared biological consensus and exports a consensus-normalized representation for downstream analysis.
+
+---
+
+## Overview
+
+Normalization choice is a major source of variability in microbiome data analysis. Different preprocessing methods can substantially alter multivariate structure, feature rankings, and biological interpretation.
+
+This repository provides a consensus framework that:
+
+- Integrates multiple normalization outputs jointly  
+- Quantifies agreement and disagreement across methods  
+- Extracts shared biological signal  
+- Produces a consensus data representation  
+- Supports simulation and real-world benchmarking
+
+Applications included:
+
+- Simulation benchmarking with known ground truth  
+- Real-world *Schubert CDI* dataset analysis
+
+---
+
+## Contact
+
+**Amen Al Khafaji**  
+Email: amen.a.khabeer@uotechnology.edu.iq
+
+Last document update: **16/05/2026**
+
+---
+
+## Requirements
+
+The following software is required:
+
+- MATLAB
+- MEDA Toolbox version 1.12
+
+MEDA Toolbox repository:
+
+https://github.com/josecamachop/MEDA-Toolbox
+
+---
+
+## Installation
+
+### 1. Download MEDA Toolbox
+
+Download MEDA Toolbox version 1.12 from:
+
+https://github.com/josecamachop/MEDA-Toolbox
+
+### 2. Add MEDA Toolbox to MATLAB Path
+
+addpath(genpath('path_to/MEDA-Toolbox-1.12'));
+savepath;
 
 
-Download the required simulation input files.
+3. Add This Repository to MATLAB Path
+addpath(genpath('path_to/CASCA_repository'));
+savepath;
+
+Replace path_to/CASCA_repository with the location of this repository.
+
+---
+
+### Repository Structure
+.
+├── README.md
+├── LICENSE
+├── CASCA.m
+├── CASCA_panel.m
+├── Confmat.m
+├── schubert.m
+├── schubert_overlap.m
+├── Data/
+└── Figures/
+
+---
+
+## Folder Description
+| Folder / File      | Description                               |
+| ------------------ | ----------------------------------------- |
+| CASCA.m            | Main simulation analysis script           |
+| CASCA_panel.m      | Generates simulation visualization panels |
+| Confmat.m          | Computes confusion-matrix metrics         |
+| schubert.m         | Main real-data analysis script            |
+| schubert_overlap.m | Overlap and comparison analysis           |
+| Data/              | Input simulation and real-world datasets  |
+| Figures/           | Exported output figures                   |
 
 
-Place the simulation files in the same working directory as CASCA.m, unless you modify the file paths inside the scripts.
+---
 
+## General Workflow
 
-Run the main C-ASCA simulation script:
+Load raw microbiome count data
+        ↓
+Generate multiple normalization outputs
+        ↓
+Build multiblock matrix
+        ↓
+Run C-ASCA decomposition
+        ↓
+Separate consensus and disagreement structure
+        ↓
+Interpret scores, loadings, and contributions
+        ↓
+Export consensus-normalized matrix
 
+---
 
+## Usage
+
+Option 1: Simulation Analysis
+
+Use this workflow for controlled benchmarking with known ground truth.
+
+Step 1: Prepare Simulation Files
+
+Download or generate the required simulation datasets.
+
+Place all files in the same working directory as:
+
+CASCA.m
+Step 2: Run Main Simulation Analysis
 CASCA
-To generate the simulation visualization panels, run:
+Step 3: Generate Visualization Panels
 CASCA_panel
-To compute confusion-matrix results, including true positives, false positives, false negatives, precision, recall, and F1 score, run:
+Step 4: Compute Classification Metrics
 Confmat
-Real-world Schubert CDI dataset analysis
-To run the real-data analysis:
+
+---
+
+## Outputs may include:
+
+True positives
+False positives
+False negatives
+Precision
+Recall
+F1 score
+
+---
 
 
-Download the Schubert CDI dataset files.
+### Output
+
+Typical outputs include:
+
+Consensus score plots
+Loading plots
+Method disagreement structure
+Simulation recovery metrics
+Overlap statistics
+Exported consensus-normalized matrix
+Supported Normalization Methods
+
+---
+
+## The framework is designed for integrating multiple preprocessing outputs, including:
+
+Raw counts
+Total-sum scaling (TSS)
+Rarefaction
+Centered log-ratio (CLR)
+Other normalization strategies supplied by the user
+Important Notes
+MEDA Toolbox must be added to the MATLAB path before running any script.
+If MATLAB reports missing functions, confirm recursive path installation.
+If input files are not found, verify dataset locations.
+If scripts contain local hard-coded paths, update them before execution.
+
+---
+
+### Citation
+
+If you use this repository, please cite:
+
+Al Khafaji A, Gómez-Llorente C, Camacho J. Consensus ANOVA–Simultaneous Component Analysis for the Normalization of Metagenomics Data. Manuscript in preparation.
+
+Update this citation once the final journal reference becomes available.
 
 
-Place the Schubert files in the same working directory as schubert.m, unless you modify the file paths inside the scripts.
 
 
-Run the main real-data analysis script:
+--- 
+
+## License
+
+This repository is released under the MIT License.
+
+See the LICENSE file for full details.
 
 
-schubert
-To compute overlap and method-comparison results for the Schubert dataset, run:
-schubert_overlap
-Important notes
-The MEDA Toolbox must be added to the MATLAB path before running any C-ASCA script.
-If MATLAB reports missing functions, check that both MEDA-Toolbox-1.12 and this repository have been added recursively to the MATLAB path.
-If MATLAB reports missing input files, check that the dataset files are located in the directory expected by the scripts.
-If the scripts contain local file paths, update those paths before running the analysis.
-Citation
-If you use this code, please cite the associated manuscript:
-Al Khafaji A, Gómez-Llorente C, Camacho J. Consensus ANOVA--Simultaneous Component Analysis for the Normalization of Metagenomics Data.
-Update this citation with the final journal reference once the manuscript is published.
-Contact
-For questions about the code, please contact:
-Amen Al Khafaji
-amen.a.khabeer@uotechnology.edu.iq
-License
-This repository is released under the MIT License. See the LICENSE file for details.
+
+
+
